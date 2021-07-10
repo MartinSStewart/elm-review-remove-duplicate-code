@@ -8,9 +8,10 @@ module RemoveDuplicateCode exposing (rule)
 
 import Dict exposing (Dict)
 import Elm.Syntax.Declaration exposing (Declaration(..))
-import Elm.Syntax.Expression exposing (Expression(..))
+import Elm.Syntax.Expression exposing (Expression(..), Function, LetDeclaration(..))
 import Elm.Syntax.ModuleName exposing (ModuleName)
 import Elm.Syntax.Node as Node exposing (Node)
+import Elm.Syntax.Pattern exposing (Pattern(..))
 import Elm.Syntax.Range exposing (Range)
 import List.Nonempty exposing (Nonempty)
 import Review.ModuleNameLookupTable exposing (ModuleNameLookupTable)
@@ -73,32 +74,48 @@ moduleVisitor =
     Rule.withDeclarationListVisitor declarationVisitor
 
 
-declarationVisitor : List (Node Declaration) -> ModuleContext -> ( List (Error {}), moduleContext )
+declarationVisitor : List (Node Declaration) -> ModuleContext -> ( List (Error {}), ModuleContext )
 declarationVisitor declarations context =
-    { context
-        | hashedExpression =
-            List.map hashDeclaration declarations
-    }
+    ( []
+    , { context
+        | hashedExpressions =
+            List.foldl
+                (hashDeclaration context.lookupTable)
+                context.hashedExpressions
+                declarations
+      }
+    )
 
 
-hashDeclaration : Node Declaration -> Dict String (Nonempty HashData) -> Dict String (Nonempty HashData)
-hashDeclaration (Node range declaration) hashDict =
+hashDeclaration : ModuleNameLookupTable -> Node Declaration -> Dict String (Nonempty HashData) -> Dict String (Nonempty HashData)
+hashDeclaration lookupTable (Node range declaration) hashDict =
     case declaration of
         FunctionDeclaration function ->
-            let
-                implementation =
-                    Node.value function.declaration
-
-                result =
-                    hashExpression implementation.expression 1 hashDict
-            in
-            insertHash
-                (hashText (Node.value implementation.name) result.hash)
-                { depth = 0, range = range }
-                result.hashDict
+            hashFunction lookupTable range function hashDict |> .hashDict
 
         _ ->
             hashDict
+
+
+hashFunction : ModuleNameLookupTable -> Range -> Function -> Dict String (Nonempty HashData) -> { hash : String, hashDict : Dict String (Nonempty HashData) }
+hashFunction lookupTable range function hashDict =
+    let
+        implementation =
+            Node.value function.declaration
+
+        result =
+            hashExpression lookupTable implementation.expression 1 hashDict
+
+        newHash =
+            hashText (Node.value implementation.name) result.hash
+    in
+    { hash = newHash
+    , hashDict =
+        insertHash
+            newHash
+            { depth = 0, range = range }
+            result.hashDict
+    }
 
 
 hashText : String -> String -> String
@@ -110,30 +127,59 @@ escapeChar =
     "‱"
 
 
-hashExpression : Node Expression -> Int -> Dict String (Nonempty HashData) -> { hash : String, hashDict : Dict String (Nonempty HashData) }
-hashExpression (Node range expression) depth hashDict =
+hashExpression :
+    ModuleNameLookupTable
+    -> Node Expression
+    -> Int
+    -> Dict String (Nonempty HashData)
+    -> { hash : String, hashDict : Dict String (Nonempty HashData) }
+hashExpression lookupTable (Node range expression) depth hashDict =
+    let
+        hashStuff : String -> List (Node Expression) -> { hash : String, hashDict : Dict String (Nonempty HashData) }
+        hashStuff hash nodes =
+            let
+                finalResult =
+                    List.foldl
+                        (\node state ->
+                            let
+                                result =
+                                    hashExpression lookupTable node (depth + 1) state.hashDict
+                            in
+                            { hash = hashText state.hash result.hash
+                            , hashDict = result.hashDict
+                            }
+                        )
+                        { hash = escapeChar ++ hash, hashDict = hashDict }
+                        nodes
+            in
+            { hash = finalResult.hash
+            , hashDict = insertHash finalResult.hash { depth = depth, range = range } finalResult.hashDict
+            }
+    in
     case expression of
         UnitExpr ->
             { hash = "0" ++ escapeChar, hashDict = hashDict }
 
         Application nodes ->
+            hashStuff ("1" ++ escapeChar) nodes
+
+        OperatorApplication string _ left right ->
+            hashStuff ("2" ++ escapeChar ++ string) [ left, right ]
+
+        FunctionOrValue moduleName name ->
             let
-                result =
-                    hashExpression node (depth + 1) hashDict
-
-                newHash =
-                    "10" ++ escapeChar ++ result.hash
+                fullName =
+                    Review.ModuleNameLookupTable.moduleNameAt lookupTable range
+                        |> Maybe.withDefault moduleName
+                        |> (\a -> a ++ [ name ])
+                        |> String.join "."
             in
-            { hash = newHash, hashDict = insertHash newHash { depth = depth, range = range } result.hashDict }
-
-        OperatorApplication string infixDirection left right ->
-            Debug.todo ""
-
-        FunctionOrValue moduleName string ->
-            Debug.todo ""
+            { hash = "3" ++ escapeChar ++ fullName
+            , hashDict = hashDict
+            }
 
         IfBlock condition ifTrue ifFalse ->
-            Debug.todo ""
+            hashStuff ("4" ++ escapeChar) [ condition, ifTrue, ifFalse ]
 
         PrefixOperator string ->
             { hash = "5" ++ escapeChar ++ string, hashDict = hashDict }
@@ -151,14 +197,7 @@ hashExpression (Node range expression) depth hashDict =
             { hash = "9" ++ escapeChar ++ String.fromFloat float, hashDict = hashDict }
 
         Negation node ->
-            let
-                result =
-                    hashExpression node (depth + 1) hashDict
-
-                newHash =
-                    "10" ++ escapeChar ++ result.hash
-            in
-            { hash = newHash, hashDict = insertHash newHash { depth = depth, range = range } result.hashDict }
+            hashStuff ("10" ++ escapeChar) [ node ]
 
         Literal string ->
             { hash = "11" ++ escapeChar ++ string, hashDict = hashDict }
@@ -167,13 +206,20 @@ hashExpression (Node range expression) depth hashDict =
             { hash = "12" ++ escapeChar ++ String.fromChar char, hashDict = hashDict }
 
         TupledExpression nodes ->
-            Debug.todo ""
+            hashStuff ("13" ++ escapeChar) nodes
 
         ParenthesizedExpression node ->
-            hashExpression node (depth + 1) hashDict
+            hashExpression lookupTable node (depth + 1) hashDict
 
         LetExpression letBlock ->
-            Debug.todo ""
+            hashStuff
+                ("14" ++ escapeChar)
+                (letBlock.expression
+                    :: List.foldl
+                        (\(Node range_ letDeclaration) -> letDeclaration lookupTable range_)
+                        hashDict
+                        letBlock.declarations
+                )
 
         CaseExpression caseBlock ->
             Debug.todo ""
@@ -185,19 +231,101 @@ hashExpression (Node range expression) depth hashDict =
             Debug.todo ""
 
         ListExpr nodes ->
-            Debug.todo ""
+            hashStuff ("18" ++ escapeChar) nodes
 
-        RecordAccess value accessor ->
-            Debug.todo ""
+        RecordAccess value (Node _ accessor) ->
+            hashStuff ("19" ++ escapeChar ++ accessor) [ value ]
 
         RecordAccessFunction string ->
             { hash = "20" ++ escapeChar ++ string, hashDict = hashDict }
 
-        RecordUpdateExpression node nodes ->
+        RecordUpdateExpression (Node _ record) nodes ->
             Debug.todo ""
 
         GLSLExpression string ->
             { hash = "22" ++ escapeChar ++ string, hashDict = hashDict }
+
+
+hashLetDeclaration :
+    ModuleNameLookupTable
+    -> Node LetDeclaration
+    -> Int
+    -> Dict String (Nonempty HashData)
+    -> { hash : String, hashDict : Dict String (Nonempty HashData) }
+hashLetDeclaration lookupTable (Node range letDeclaration) depth hashDict =
+    case letDeclaration of
+        LetFunction letFunction ->
+            hashFunction lookupTable range letFunction hashDict
+
+        LetDestructuring pattern expression ->
+            let
+                result =
+                    hashExpression lookupTable expression (depth + 1) hashDict
+
+                newHash =
+                    hashText (hashPattern lookupTable pattern) result.hash
+            in
+            { hash = newHash, hashDict = insertHash newHash { depth = depth, range = range } result.hashDict }
+
+
+hashPattern : ModuleNameLookupTable -> Node Pattern -> String
+hashPattern lookupTable (Node range pattern) =
+    let
+        hashHelper id nodes =
+            List.foldl (\node hash -> hashText hash (hashPattern lookupTable node)) (escapeChar ++ id ++ escapeChar) nodes
+    in
+    case pattern of
+        UnitPattern ->
+            "23" ++ escapeChar
+
+        AllPattern ->
+            "24" ++ escapeChar
+
+        CharPattern char ->
+            "25" ++ escapeChar ++ String.fromChar char
+
+        StringPattern string ->
+            "26" ++ escapeChar ++ string
+
+        IntPattern int ->
+            "27" ++ escapeChar ++ String.fromInt int
+
+        HexPattern int ->
+            "28" ++ escapeChar ++ String.fromInt int
+
+        FloatPattern float ->
+            "29" ++ escapeChar ++ String.fromFloat float
+
+        TuplePattern nodes ->
+            hashHelper "30" nodes
+
+        RecordPattern fields ->
+            "31" ++ escapeChar ++ (List.map Node.value fields |> List.sort |> String.join " ")
+
+        UnConsPattern a b ->
+            hashHelper "32" [ a, b ]
+
+        ListPattern nodes ->
+            hashHelper "33" nodes
+
+        VarPattern var ->
+            "34" ++ escapeChar ++ var
+
+        NamedPattern qualifiedNameRef nodes ->
+            let
+                name =
+                    Review.ModuleNameLookupTable.moduleNameAt lookupTable range
+                        |> Maybe.withDefault qualifiedNameRef.moduleName
+                        |> (\a -> a ++ [ qualifiedNameRef.name ])
+                        |> String.join "."
+            in
+            hashHelper ("35" ++ escapeChar ++ name) nodes
+
+        AsPattern node (Node _ text) ->
+            hashHelper ("36" ++ escapeChar ++ text) [ node ]
+
+        ParenthesizedPattern node ->
+            hashPattern lookupTable node
 
 
 
