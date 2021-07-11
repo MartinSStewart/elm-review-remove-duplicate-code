@@ -441,8 +441,8 @@ type alias ProjectHashData =
 finalEvaluation : ProjectContext -> List (Error { useErrorForModule : () })
 finalEvaluation projectContext =
     Dict.toList projectContext.hashedModules
-        |> maximumBy (Tuple.second >> heuristic)
-        |> Maybe.map
+        |> List.filter (Tuple.second >> heuristic >> (\a -> a > 500))
+        |> List.filterMap
             (\( _, nonempty ) ->
                 let
                     firstExample =
@@ -452,47 +452,42 @@ finalEvaluation projectContext =
                             |> Maybe.map Tuple.first
                             |> Maybe.withDefault (List.Nonempty.head nonempty)
                 in
-                if heuristic nonempty > 10 then
-                    case Dict.get firstExample.moduleName projectContext.moduleKeys of
-                        Just moduleKey ->
-                            let
-                                posToString position =
-                                    String.fromInt position.row ++ ":" ++ String.fromInt position.column
+                case Dict.get firstExample.moduleName projectContext.moduleKeys of
+                    Just moduleKey ->
+                        let
+                            posToString position =
+                                String.fromInt position.row ++ ":" ++ String.fromInt position.column
 
-                                restOfExamples =
-                                    List.Nonempty.map
-                                        (\example ->
-                                            "\n"
-                                                ++ String.join "." example.moduleName
-                                                ++ " "
-                                                ++ posToString example.range.start
-                                                ++ " to "
-                                                ++ posToString example.range.end
-                                        )
-                                        nonempty
-                                        |> List.Nonempty.toList
-                                        |> String.concat
-                            in
-                            [ Rule.errorForModule moduleKey
-                                { message =
-                                    "Found code that is repeated too often ("
-                                        ++ String.fromInt (List.Nonempty.length nonempty)
-                                        ++ " times) and can instead be combined into a single function.\n\nHere are other places it's used:\n"
-                                        ++ restOfExamples
-                                , details =
-                                    [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too often and it would be better to have a single function for it."
-                                    ]
-                                }
-                                firstExample.range
-                            ]
+                            restOfExamples =
+                                List.Nonempty.map
+                                    (\example ->
+                                        "\n"
+                                            ++ String.join "." example.moduleName
+                                            ++ " "
+                                            ++ posToString example.range.start
+                                            ++ " to "
+                                            ++ posToString example.range.end
+                                    )
+                                    nonempty
+                                    |> List.Nonempty.toList
+                                    |> String.concat
+                        in
+                        Rule.errorForModule moduleKey
+                            { message =
+                                "Found code that is repeated too often ("
+                                    ++ String.fromInt (List.Nonempty.length nonempty)
+                                    ++ " times) and can instead be combined into a single function.\n\nHere are other places it's used:\n"
+                                    ++ restOfExamples
+                            , details =
+                                [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too often and it would be better to have a single function for it."
+                                ]
+                            }
+                            firstExample.range
+                            |> Just
 
-                        Nothing ->
-                            []
-
-                else
-                    []
+                    Nothing ->
+                        Nothing
             )
-        |> Maybe.withDefault []
 
 
 heuristic : Nonempty ProjectHashData -> Int
