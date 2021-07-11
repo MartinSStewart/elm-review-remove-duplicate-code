@@ -118,7 +118,7 @@ hashFunction lookupTable range function hashDict =
     in
     { hash = newHash
     , hashDict =
-        insertHash
+        insert
             newHash
             { depth = 0, range = range }
             result.hashDict
@@ -164,7 +164,7 @@ hashExpression lookupTable depth (Node range expression) hashDict =
                         nodes
             in
             { hash = finalResult.hash
-            , hashDict = insertHash finalResult.hash { depth = depth, range = range } finalResult.hashDict
+            , hashDict = insert finalResult.hash { depth = depth, range = range } finalResult.hashDict
             }
 
         hashHelper =
@@ -297,7 +297,7 @@ hashLetDeclaration lookupTable depth (Node range letDeclaration) hashDict =
                 newHash =
                     hashText (hashPattern lookupTable pattern) result.hash
             in
-            { hash = newHash, hashDict = insertHash newHash { depth = depth, range = range } result.hashDict }
+            { hash = newHash, hashDict = insert newHash { depth = depth, range = range } result.hashDict }
 
 
 hashPattern : ModuleNameLookupTable -> Node Pattern -> String
@@ -370,8 +370,8 @@ hashPattern lookupTable (Node range pattern) =
 --        Dict.empty
 
 
-insertHash : String -> a -> Dict String (Nonempty a) -> Dict String (Nonempty a)
-insertHash hash data dict =
+insert : comparable -> a -> Dict comparable (Nonempty a) -> Dict comparable (Nonempty a)
+insert hash data dict =
     Dict.update hash
         (\maybe ->
             case maybe of
@@ -380,6 +380,20 @@ insertHash hash data dict =
 
                 Nothing ->
                     List.Nonempty.fromElement data |> Just
+        )
+        dict
+
+
+insertMany : String -> Nonempty a -> Dict String (Nonempty a) -> Dict String (Nonempty a)
+insertMany hash data dict =
+    Dict.update hash
+        (\maybe ->
+            case maybe of
+                Just value ->
+                    List.Nonempty.append data value |> Just
+
+                Nothing ->
+                    Just data
         )
         dict
 
@@ -438,28 +452,65 @@ type alias ProjectHashData =
     { moduleName : ModuleName, depth : Int, range : Range }
 
 
+addRanges : Nonempty ProjectHashData -> Dict ModuleName (Nonempty Range) -> Dict ModuleName (Nonempty Range)
+addRanges nonempty dict =
+    List.Nonempty.toList nonempty
+        |> List.foldl
+            (\a dict_ ->
+                insert a.moduleName a.range dict_
+            )
+            dict
+
+
 finalEvaluation : ProjectContext -> List (Error { useErrorForModule : () })
 finalEvaluation projectContext =
-    Dict.toList projectContext.hashedModules
-        |> List.filter (Tuple.second >> heuristic >> (\a -> a > 2000))
-        |> List.filterMap
-            (\( _, nonempty ) ->
+    let
+        potentialErrors : List ( String, Nonempty ProjectHashData )
+        potentialErrors =
+            Dict.toList projectContext.hashedModules
+                |> List.filter (Tuple.second >> passesHeuristic)
+                |> List.sortBy (Tuple.second >> heuristic >> negate)
+    in
+    potentialErrors
+        |> List.foldl
+            (\( _, potentialError ) ( errors, moduleRanges ) ->
                 let
-                    firstExample =
-                        List.Nonempty.toList nonempty
-                            |> gatherEqualsBy .moduleName
-                            |> maximumBy (Tuple.second >> List.length)
-                            |> Maybe.map Tuple.first
-                            |> Maybe.withDefault (List.Nonempty.head nonempty)
+                    usedRangesRemoved : List ProjectHashData
+                    usedRangesRemoved =
+                        List.Nonempty.toList potentialError
+                            |> List.filter
+                                (\potentialError_ ->
+                                    case Dict.get potentialError_.moduleName moduleRanges of
+                                        Just ranges ->
+                                            List.Nonempty.any (\range -> Elm.Syntax.Range.combine [ potentialError_.range, range ] == range) ranges |> not
+
+                                        Nothing ->
+                                            True
+                                )
                 in
+                case List.Nonempty.fromList usedRangesRemoved of
+                    Just newPotentialErrors ->
+                        if passesHeuristic newPotentialErrors then
+                            ( potentialError :: errors, addRanges newPotentialErrors moduleRanges )
+
+                        else
+                            ( errors, moduleRanges )
+
+                    Nothing ->
+                        ( errors, moduleRanges )
+            )
+            ( [], Dict.empty )
+        |> Tuple.first
+        |> List.filterMap
+            (\(Nonempty firstExample restOfExamples) ->
                 case Dict.get firstExample.moduleName projectContext.moduleKeys of
                     Just moduleKey ->
                         let
                             posToString position =
                                 String.fromInt position.row ++ ":" ++ String.fromInt position.column
 
-                            restOfExamples =
-                                List.Nonempty.map
+                            restOfExamplesText =
+                                List.map
                                     (\example ->
                                         "\n"
                                             ++ String.join "." example.moduleName
@@ -468,16 +519,15 @@ finalEvaluation projectContext =
                                             ++ " to "
                                             ++ posToString example.range.end
                                     )
-                                    nonempty
-                                    |> List.Nonempty.toList
+                                    restOfExamples
                                     |> String.concat
                         in
                         Rule.errorForModule moduleKey
                             { message =
                                 "Found code that is repeated too often ("
-                                    ++ String.fromInt (List.Nonempty.length nonempty)
+                                    ++ String.fromInt (List.length restOfExamples + 1)
                                     ++ " times) and can instead be combined into a single function.\n\nHere are other places it's used:\n"
-                                    ++ restOfExamples
+                                    ++ restOfExamplesText
                             , details =
                                 [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too often and it would be better to have a single function for it."
                                 ]
@@ -488,6 +538,11 @@ finalEvaluation projectContext =
                     Nothing ->
                         Nothing
             )
+
+
+passesHeuristic : Nonempty ProjectHashData -> Bool
+passesHeuristic nonempty =
+    heuristic nonempty > 2000
 
 
 heuristic : Nonempty ProjectHashData -> Float
