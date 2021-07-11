@@ -475,10 +475,12 @@ finalEvaluation projectContext =
                             in
                             [ Rule.errorForModule moduleKey
                                 { message =
-                                    "Found code that is repeated too often and can instead be combined into a single function.\n\nHere are other places it's used:\n"
+                                    "Found code that is repeated too often ("
+                                        ++ String.fromInt (List.Nonempty.length nonempty)
+                                        ++ " times) and can instead be combined into a single function.\n\nHere are other places it's used:\n"
                                         ++ restOfExamples
                                 , details =
-                                    [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too many and it would be better to have a single function for it."
+                                    [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too often and it would be better to have a single function for it."
                                     ]
                                 }
                                 firstExample.range
