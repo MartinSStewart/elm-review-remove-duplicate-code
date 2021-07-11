@@ -10,10 +10,11 @@ import Dict exposing (Dict)
 import Elm.Syntax.Declaration exposing (Declaration(..))
 import Elm.Syntax.Expression exposing (Expression(..), Function, LetDeclaration(..))
 import Elm.Syntax.ModuleName exposing (ModuleName)
-import Elm.Syntax.Node as Node exposing (Node)
+import Elm.Syntax.Node as Node exposing (Node(..))
 import Elm.Syntax.Pattern exposing (Pattern(..))
 import Elm.Syntax.Range exposing (Range)
-import List.Nonempty exposing (Nonempty)
+import List.Nonempty exposing (Nonempty(..))
+import MD5
 import Review.ModuleNameLookupTable exposing (ModuleNameLookupTable)
 import Review.Rule as Rule exposing (Error, ModuleRuleSchema, Rule)
 
@@ -54,7 +55,7 @@ elm-review --template MartinSStewart/elm-review-remove-duplicate-code/example --
 -}
 rule : Rule
 rule =
-    Rule.newProjectRuleSchema "RemoveDuplicateCode" { moduleKeys = Dict.empty }
+    Rule.newProjectRuleSchema "RemoveDuplicateCode" initProject
         |> Rule.withModuleVisitor moduleVisitor
         |> Rule.withModuleContextUsingContextCreator
             { fromProjectToModule =
@@ -66,10 +67,16 @@ rule =
                     |> Rule.withMetadata
             , foldProjectContexts = foldProjectContexts
             }
+        |> Rule.withFinalProjectEvaluation finalEvaluation
         |> Rule.fromProjectRuleSchema
 
 
-moduleVisitor : ModuleRuleSchema {} ModuleContext -> ModuleRuleSchema { moduleSchemaState | hasAtLeastOneVisitor : () } ModuleContext
+initProject : ProjectContext
+initProject =
+    { moduleKeys = Dict.empty, hashedModules = Dict.empty }
+
+
+moduleVisitor : ModuleRuleSchema {} ModuleContext -> ModuleRuleSchema { hasAtLeastOneVisitor : () } ModuleContext
 moduleVisitor =
     Rule.withDeclarationListVisitor declarationVisitor
 
@@ -104,7 +111,7 @@ hashFunction lookupTable range function hashDict =
             Node.value function.declaration
 
         result =
-            hashExpression lookupTable implementation.expression 1 hashDict
+            hashExpression lookupTable 1 implementation.expression hashDict
 
         newHash =
             hashText (Node.value implementation.name) result.hash
@@ -120,7 +127,7 @@ hashFunction lookupTable range function hashDict =
 
 hashText : String -> String -> String
 hashText text hash =
-    Debug.todo ""
+    MD5.hex (text ++ hash)
 
 
 escapeChar =
@@ -129,21 +136,25 @@ escapeChar =
 
 hashExpression :
     ModuleNameLookupTable
-    -> Node Expression
     -> Int
+    -> Node Expression
     -> Dict String (Nonempty HashData)
     -> { hash : String, hashDict : Dict String (Nonempty HashData) }
-hashExpression lookupTable (Node range expression) depth hashDict =
+hashExpression lookupTable depth (Node range expression) hashDict =
     let
-        hashStuff : String -> List (Node Expression) -> { hash : String, hashDict : Dict String (Nonempty HashData) }
-        hashStuff hash nodes =
+        hashStuff :
+            (Int -> Node a -> Dict String (Nonempty HashData) -> { hash : String, hashDict : Dict String (Nonempty HashData) })
+            -> String
+            -> List (Node a)
+            -> { hash : String, hashDict : Dict String (Nonempty HashData) }
+        hashStuff hashFunction_ hash nodes =
             let
                 finalResult =
                     List.foldl
                         (\node state ->
                             let
                                 result =
-                                    hashExpression lookupTable node (depth + 1) state.hashDict
+                                    hashFunction_ (depth + 1) node state.hashDict
                             in
                             { hash = hashText state.hash result.hash
                             , hashDict = result.hashDict
@@ -155,16 +166,19 @@ hashExpression lookupTable (Node range expression) depth hashDict =
             { hash = finalResult.hash
             , hashDict = insertHash finalResult.hash { depth = depth, range = range } finalResult.hashDict
             }
+
+        hashHelper =
+            hashStuff (hashExpression lookupTable)
     in
     case expression of
         UnitExpr ->
             { hash = "0" ++ escapeChar, hashDict = hashDict }
 
         Application nodes ->
-            hashStuff ("1" ++ escapeChar) nodes
+            hashHelper ("1" ++ escapeChar) nodes
 
         OperatorApplication string _ left right ->
-            hashStuff ("2" ++ escapeChar ++ string) [ left, right ]
+            hashHelper ("2" ++ escapeChar ++ string) [ left, right ]
 
         FunctionOrValue moduleName name ->
             let
@@ -179,7 +193,7 @@ hashExpression lookupTable (Node range expression) depth hashDict =
             }
 
         IfBlock condition ifTrue ifFalse ->
-            hashStuff ("4" ++ escapeChar) [ condition, ifTrue, ifFalse ]
+            hashHelper ("4" ++ escapeChar) [ condition, ifTrue, ifFalse ]
 
         PrefixOperator string ->
             { hash = "5" ++ escapeChar ++ string, hashDict = hashDict }
@@ -197,7 +211,7 @@ hashExpression lookupTable (Node range expression) depth hashDict =
             { hash = "9" ++ escapeChar ++ String.fromFloat float, hashDict = hashDict }
 
         Negation node ->
-            hashStuff ("10" ++ escapeChar) [ node ]
+            hashHelper ("10" ++ escapeChar) [ node ]
 
         Literal string ->
             { hash = "11" ++ escapeChar ++ string, hashDict = hashDict }
@@ -206,41 +220,59 @@ hashExpression lookupTable (Node range expression) depth hashDict =
             { hash = "12" ++ escapeChar ++ String.fromChar char, hashDict = hashDict }
 
         TupledExpression nodes ->
-            hashStuff ("13" ++ escapeChar) nodes
+            hashHelper ("13" ++ escapeChar) nodes
 
         ParenthesizedExpression node ->
-            hashExpression lookupTable node (depth + 1) hashDict
+            hashExpression lookupTable (depth + 1) node hashDict
 
         LetExpression letBlock ->
-            hashStuff
-                ("14" ++ escapeChar)
-                (letBlock.expression
-                    :: List.foldl
-                        (\(Node range_ letDeclaration) -> letDeclaration lookupTable range_)
-                        hashDict
-                        letBlock.declarations
-                )
+            hashStuff (hashLetDeclaration lookupTable) ("14" ++ escapeChar) letBlock.declarations
 
         CaseExpression caseBlock ->
-            Debug.todo ""
+            let
+                patternHash =
+                    List.map (Tuple.first >> hashPattern lookupTable) caseBlock.cases |> String.join ","
+            in
+            hashHelper ("15" ++ escapeChar ++ patternHash) (caseBlock.expression :: List.map Tuple.second caseBlock.cases)
 
         LambdaExpression lambda ->
-            Debug.todo ""
+            let
+                argsHash =
+                    List.map (hashPattern lookupTable) lambda.args |> String.join " "
+            in
+            hashHelper ("16" ++ escapeChar ++ argsHash) [ lambda.expression ]
 
         RecordExpr nodes ->
-            Debug.todo ""
+            let
+                sorted =
+                    List.sortBy (Node.value >> Tuple.first >> Node.value) nodes
+
+                fieldNames =
+                    List.map (Node.value >> Tuple.first >> Node.value) sorted |> String.join " "
+            in
+            List.map (Node.value >> Tuple.second) sorted
+                |> hashHelper ("17" ++ escapeChar ++ fieldNames)
 
         ListExpr nodes ->
-            hashStuff ("18" ++ escapeChar) nodes
+            hashHelper ("18" ++ escapeChar) nodes
 
         RecordAccess value (Node _ accessor) ->
-            hashStuff ("19" ++ escapeChar ++ accessor) [ value ]
+            hashHelper ("19" ++ escapeChar ++ accessor) [ value ]
 
         RecordAccessFunction string ->
             { hash = "20" ++ escapeChar ++ string, hashDict = hashDict }
 
         RecordUpdateExpression (Node _ record) nodes ->
-            Debug.todo ""
+            let
+                sorted =
+                    nodes
+                        |> List.sortBy (Node.value >> Tuple.first >> Node.value)
+
+                fieldNames =
+                    List.map (Node.value >> Tuple.first >> Node.value) sorted |> String.join " "
+            in
+            List.map (Node.value >> Tuple.second) sorted
+                |> hashHelper ("21" ++ escapeChar ++ record ++ " " ++ fieldNames)
 
         GLSLExpression string ->
             { hash = "22" ++ escapeChar ++ string, hashDict = hashDict }
@@ -248,11 +280,11 @@ hashExpression lookupTable (Node range expression) depth hashDict =
 
 hashLetDeclaration :
     ModuleNameLookupTable
-    -> Node LetDeclaration
     -> Int
+    -> Node LetDeclaration
     -> Dict String (Nonempty HashData)
     -> { hash : String, hashDict : Dict String (Nonempty HashData) }
-hashLetDeclaration lookupTable (Node range letDeclaration) depth hashDict =
+hashLetDeclaration lookupTable depth (Node range letDeclaration) hashDict =
     case letDeclaration of
         LetFunction letFunction ->
             hashFunction lookupTable range letFunction hashDict
@@ -260,7 +292,7 @@ hashLetDeclaration lookupTable (Node range letDeclaration) depth hashDict =
         LetDestructuring pattern expression ->
             let
                 result =
-                    hashExpression lookupTable expression (depth + 1) hashDict
+                    hashExpression lookupTable (depth + 1) expression hashDict
 
                 newHash =
                     hashText (hashPattern lookupTable pattern) result.hash
@@ -338,7 +370,7 @@ hashPattern lookupTable (Node range pattern) =
 --        Dict.empty
 
 
-insertHash : String -> HashData -> Dict String (Nonempty HashData) -> Dict String (Nonempty HashData)
+insertHash : String -> a -> Dict String (Nonempty a) -> Dict String (Nonempty a)
 insertHash hash data dict =
     Dict.update hash
         (\maybe ->
@@ -362,16 +394,34 @@ fromProjectToModule lookupTable projectContext =
 fromModuleToProject : Rule.ModuleKey -> Rule.Metadata -> ModuleContext -> ProjectContext
 fromModuleToProject moduleKey metadata moduleContext =
     { moduleKeys = Dict.singleton (Rule.moduleNameFromMetadata metadata) moduleKey
+    , hashedModules =
+        Dict.map
+            (\_ value -> List.Nonempty.map (toProjectHashData (Rule.moduleNameFromMetadata metadata)) value)
+            moduleContext.hashedExpressions
     }
+
+
+toProjectHashData : ModuleName -> HashData -> ProjectHashData
+toProjectHashData moduleName hashData =
+    { moduleName = moduleName, depth = hashData.depth, range = hashData.range }
 
 
 foldProjectContexts : ProjectContext -> ProjectContext -> ProjectContext
 foldProjectContexts contextA contextB =
-    { moduleKeys = Dict.union contextA.moduleKeys contextB.moduleKeys }
+    { moduleKeys = Dict.union contextA.moduleKeys contextB.moduleKeys
+    , hashedModules =
+        Dict.merge
+            (\_ _ result -> result)
+            (\hash a b result -> Dict.insert hash (List.Nonempty.append a b) result)
+            (\hash b result -> Dict.insert hash b result)
+            contextA.hashedModules
+            contextB.hashedModules
+            contextA.hashedModules
+    }
 
 
 type alias ProjectContext =
-    { moduleKeys : Dict ModuleName Rule.ModuleKey }
+    { moduleKeys : Dict ModuleName Rule.ModuleKey, hashedModules : Dict String (Nonempty ProjectHashData) }
 
 
 type alias ModuleContext =
@@ -384,5 +434,170 @@ type alias HashData =
     { depth : Int, range : Range }
 
 
-finalEvaluation =
-    Debug.todo ""
+type alias ProjectHashData =
+    { moduleName : ModuleName, depth : Int, range : Range }
+
+
+finalEvaluation : ProjectContext -> List (Error { useErrorForModule : () })
+finalEvaluation projectContext =
+    Dict.toList projectContext.hashedModules
+        |> maximumBy (Tuple.second >> heuristic)
+        |> Maybe.map
+            (\( _, nonempty ) ->
+                let
+                    firstExample =
+                        List.Nonempty.toList nonempty
+                            |> gatherEqualsBy .moduleName
+                            |> maximumBy (Tuple.second >> List.length)
+                            |> Maybe.map Tuple.first
+                            |> Maybe.withDefault (List.Nonempty.head nonempty)
+                in
+                if heuristic nonempty > 10 then
+                    case Dict.get firstExample.moduleName projectContext.moduleKeys of
+                        Just moduleKey ->
+                            let
+                                posToString position =
+                                    String.fromInt position.row ++ ":" ++ String.fromInt position.column
+
+                                restOfExamples =
+                                    List.Nonempty.map
+                                        (\example ->
+                                            "\n"
+                                                ++ String.join "." example.moduleName
+                                                ++ " "
+                                                ++ posToString example.range.start
+                                                ++ " to "
+                                                ++ posToString example.range.end
+                                        )
+                                        nonempty
+                                        |> List.Nonempty.toList
+                                        |> String.concat
+                            in
+                            [ Rule.errorForModule moduleKey
+                                { message =
+                                    "Found code that is repeated too often and can instead be combined into a single function.\n\nHere are other places it's used:\n"
+                                        ++ restOfExamples
+                                , details =
+                                    [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too many and it would be better to have a single function for it."
+                                    ]
+                                }
+                                firstExample.range
+                            ]
+
+                        Nothing ->
+                            []
+
+                else
+                    []
+            )
+        |> Maybe.withDefault []
+
+
+heuristic : Nonempty ProjectHashData -> Int
+heuristic nonempty =
+    let
+        minimumRange =
+            List.Nonempty.map
+                (\{ range } ->
+                    if range.start.row == range.end.row then
+                        range.end.column - range.start.column
+
+                    else
+                        (range.end.row - range.start.row) * 100
+                )
+                nonempty
+                |> nonemptyMinimumBy identity
+    in
+    List.Nonempty.length nonempty * minimumRange
+
+
+{-| Group equal elements together. A function is applied to each element of the list
+and then the equality check is performed against the results of that function evaluation.
+Elements will be grouped in the same order as they appear in the original list. The
+same applies to elements within each group.
+gatherEqualsBy .age [{age=25},{age=23},{age=25}]
+--> [({age=25},[{age=25}]),({age=23},[])]
+Copied from <https://github.com/elm-community/list-extra>
+-}
+gatherEqualsBy : (a -> b) -> List a -> List ( a, List a )
+gatherEqualsBy extract list =
+    gatherWith (\a b -> extract a == extract b) list
+
+
+{-| Group equal elements together using a custom equality function. Elements will be
+grouped in the same order as they appear in the original list. The same applies to
+elements within each group.
+gatherWith (==) [1,2,1,3,2]
+--> [(1,[1]),(2,[2]),(3,[])]
+Copied from <https://github.com/elm-community/list-extra>
+-}
+gatherWith : (a -> a -> Bool) -> List a -> List ( a, List a )
+gatherWith testFn list =
+    let
+        helper : List a -> List ( a, List a ) -> List ( a, List a )
+        helper scattered gathered =
+            case scattered of
+                [] ->
+                    List.reverse gathered
+
+                toGather :: population ->
+                    let
+                        ( gathering, remaining ) =
+                            List.partition (testFn toGather) population
+                    in
+                    helper remaining (( toGather, gathering ) :: gathered)
+    in
+    helper list []
+
+
+{-| Find the first maximum element in a list using a comparable transformation.
+Copied from <https://github.com/elm-community/list-extra>
+-}
+maximumBy : (a -> comparable) -> List a -> Maybe a
+maximumBy f ls =
+    let
+        maxBy x ( y, fy ) =
+            let
+                fx =
+                    f x
+            in
+            if fx > fy then
+                ( x, fx )
+
+            else
+                ( y, fy )
+    in
+    case ls of
+        [ l_ ] ->
+            Just l_
+
+        l_ :: ls_ ->
+            Just <| Tuple.first <| List.foldl maxBy ( l_, f l_ ) ls_
+
+        _ ->
+            Nothing
+
+
+{-| Given a function to map a type to a comparable type, find the **first**
+minimum element in a non-empty list.
+
+Copied from <https://github.com/langyu-app/elm-ancillary-nonempty-list>
+
+-}
+nonemptyMinimumBy : (a -> comparable) -> Nonempty a -> a
+nonemptyMinimumBy f (Nonempty l ls) =
+    let
+        step : a -> ( a, comparable ) -> ( a, comparable )
+        step x (( _, fY ) as acc) =
+            let
+                fX : comparable
+                fX =
+                    f x
+            in
+            if fX < fY then
+                ( x, fX )
+
+            else
+                acc
+    in
+    Tuple.first <| List.foldl step ( l, f l ) ls
