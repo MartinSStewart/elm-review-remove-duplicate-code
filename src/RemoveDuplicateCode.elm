@@ -507,8 +507,15 @@ heuristic nonempty =
                 )
                 nonempty
                 |> nonemptyMinimumBy identity
+
+        count =
+            List.Nonempty.length nonempty
     in
-    List.Nonempty.length nonempty * minimumRange
+    if count > 2 then
+        count * minimumRange
+
+    else
+        0
 
 
 {-| Group equal elements together. A function is applied to each element of the list
