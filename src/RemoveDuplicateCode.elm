@@ -19,29 +19,11 @@ import Review.ModuleNameLookupTable exposing (ModuleNameLookupTable)
 import Review.Rule as Rule exposing (Error, ModuleRuleSchema, Rule)
 
 
-{-| Reports... REPLACEME
+{-| This rule reports when it finds code that has been copied too many times and should instead be made into a reusable function.
 
-    config =
-        [ RemoveDuplicateCode.rule
-        ]
-
-
-## Fail
-
-    a =
-        "REPLACEME example to replace"
-
-
-## Success
-
-    a =
-        "REPLACEME example to replace"
-
-
-## When (not) to enable this rule
-
-This rule is useful when REPLACEME.
-This rule is not useful when REPLACEME.
+Note that "too many times" depends both on the number of copies and how much code is being copied.
+You can write `Element.width Element.fill` hundreds of times and you won't get an error.
+But if you were to copy paste a hundred line block of code twice then this rule would tell you to place it in a function instead.
 
 
 ## Try it out
@@ -130,6 +112,9 @@ hashText text hash =
     MD5.hex (text ++ hash)
 
 
+{-| This is added to hashes to delimit parts of the hash
+-}
+escapeChar : String
 escapeChar =
     "‱"
 
@@ -360,16 +345,6 @@ hashPattern lookupTable (Node range pattern) =
             hashPattern lookupTable node
 
 
-
---mergeHashes : Dict String (Nonempty HashData) -> Dict String (Nonempty HashData) -> Dict String (Nonempty HashData)
---mergeHashes dict0 dict1 =
---    Dict.merge
---        (\key a -> )
---        dict0
---        dict1
---        Dict.empty
-
-
 insert : comparable -> a -> Dict comparable (Nonempty a) -> Dict comparable (Nonempty a)
 insert hash data dict =
     Dict.update hash
@@ -384,22 +359,8 @@ insert hash data dict =
         dict
 
 
-insertMany : String -> Nonempty a -> Dict String (Nonempty a) -> Dict String (Nonempty a)
-insertMany hash data dict =
-    Dict.update hash
-        (\maybe ->
-            case maybe of
-                Just value ->
-                    List.Nonempty.append data value |> Just
-
-                Nothing ->
-                    Just data
-        )
-        dict
-
-
 fromProjectToModule : ModuleNameLookupTable -> ProjectContext -> ModuleContext
-fromProjectToModule lookupTable projectContext =
+fromProjectToModule lookupTable _ =
     { lookupTable = lookupTable
     , hashedExpressions = Dict.empty
     }
@@ -568,73 +529,6 @@ heuristic nonempty =
 
     else
         0
-
-
-{-| Group equal elements together. A function is applied to each element of the list
-and then the equality check is performed against the results of that function evaluation.
-Elements will be grouped in the same order as they appear in the original list. The
-same applies to elements within each group.
-gatherEqualsBy .age [{age=25},{age=23},{age=25}]
---> [({age=25},[{age=25}]),({age=23},[])]
-Copied from <https://github.com/elm-community/list-extra>
--}
-gatherEqualsBy : (a -> b) -> List a -> List ( a, List a )
-gatherEqualsBy extract list =
-    gatherWith (\a b -> extract a == extract b) list
-
-
-{-| Group equal elements together using a custom equality function. Elements will be
-grouped in the same order as they appear in the original list. The same applies to
-elements within each group.
-gatherWith (==) [1,2,1,3,2]
---> [(1,[1]),(2,[2]),(3,[])]
-Copied from <https://github.com/elm-community/list-extra>
--}
-gatherWith : (a -> a -> Bool) -> List a -> List ( a, List a )
-gatherWith testFn list =
-    let
-        helper : List a -> List ( a, List a ) -> List ( a, List a )
-        helper scattered gathered =
-            case scattered of
-                [] ->
-                    List.reverse gathered
-
-                toGather :: population ->
-                    let
-                        ( gathering, remaining ) =
-                            List.partition (testFn toGather) population
-                    in
-                    helper remaining (( toGather, gathering ) :: gathered)
-    in
-    helper list []
-
-
-{-| Find the first maximum element in a list using a comparable transformation.
-Copied from <https://github.com/elm-community/list-extra>
--}
-maximumBy : (a -> comparable) -> List a -> Maybe a
-maximumBy f ls =
-    let
-        maxBy x ( y, fy ) =
-            let
-                fx =
-                    f x
-            in
-            if fx > fy then
-                ( x, fx )
-
-            else
-                ( y, fy )
-    in
-    case ls of
-        [ l_ ] ->
-            Just l_
-
-        l_ :: ls_ ->
-            Just <| Tuple.first <| List.foldl maxBy ( l_, f l_ ) ls_
-
-        _ ->
-            Nothing
 
 
 {-| Given a function to map a type to a comparable type, find the **first**
