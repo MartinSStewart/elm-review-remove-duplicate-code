@@ -441,7 +441,7 @@ type alias ProjectHashData =
 finalEvaluation : ProjectContext -> List (Error { useErrorForModule : () })
 finalEvaluation projectContext =
     Dict.toList projectContext.hashedModules
-        |> List.filter (Tuple.second >> heuristic >> (\a -> a > 500))
+        |> List.filter (Tuple.second >> heuristic >> (\a -> a > 300))
         |> List.filterMap
             (\( _, nonempty ) ->
                 let
@@ -490,7 +490,7 @@ finalEvaluation projectContext =
             )
 
 
-heuristic : Nonempty ProjectHashData -> Int
+heuristic : Nonempty ProjectHashData -> Float
 heuristic nonempty =
     let
         minimumRange =
@@ -508,8 +508,8 @@ heuristic nonempty =
         count =
             List.Nonempty.length nonempty
     in
-    if count > 2 then
-        count * minimumRange
+    if count > 1 then
+        logBase 2 (toFloat count) * toFloat minimumRange
 
     else
         0
