@@ -441,7 +441,7 @@ type alias ProjectHashData =
 finalEvaluation : ProjectContext -> List (Error { useErrorForModule : () })
 finalEvaluation projectContext =
     Dict.toList projectContext.hashedModules
-        |> List.filter (Tuple.second >> heuristic >> (\a -> a > 300))
+        |> List.filter (Tuple.second >> heuristic >> (\a -> a > 800))
         |> List.filterMap
             (\( _, nonempty ) ->
                 let
