@@ -1,4 +1,7 @@
-module RemoveDuplicateCode exposing (rule)
+module RemoveDuplicateCode exposing
+    ( rule
+    , Config, ModuleIgnoreType(..)
+    )
 
 {-|
 
@@ -82,7 +85,7 @@ isModuleIgnored config moduleName =
                     moduleName_ == moduleName
 
                 IncludeSubmodules ->
-                    List.take (List.length moduleName_) moduleName == moduleName
+                    List.take (List.length moduleName_) moduleName == moduleName_
         )
         config.ignore
 
@@ -117,7 +120,7 @@ hashFunction context range function hashDict =
             Node.value function.declaration
 
         result =
-            hashExpression context 1 implementation.expression hashDict
+            hashExpression context implementation.expression 1 hashDict
 
         newHash =
             hashText (Node.value implementation.name) result.hash
@@ -161,39 +164,42 @@ canonicalName context range moduleName name =
 
 hashExpression :
     ModuleContext
-    -> Int
     -> Node Expression
+    -> Int
     -> Dict String (Nonempty HashData)
     -> { hash : String, hashDict : Dict String (Nonempty HashData) }
-hashExpression context depth (Node range expression) hashDict =
+hashExpression context (Node range expression) depth hashDict =
     let
         hashStuff :
-            (Int -> Node a -> Dict String (Nonempty HashData) -> { hash : String, hashDict : Dict String (Nonempty HashData) })
+            Dict String (Nonempty HashData)
             -> String
-            -> List (Node a)
+            -> List (Int -> Dict String (Nonempty HashData) -> { hash : String, hashDict : Dict String (Nonempty HashData) })
             -> { hash : String, hashDict : Dict String (Nonempty HashData) }
-        hashStuff hashFunction_ hash nodes =
+        hashStuff hashDict_ hash nodes =
             let
                 finalResult =
                     List.foldl
                         (\node state ->
                             let
                                 result =
-                                    hashFunction_ (depth + 1) node state.hashDict
+                                    node (depth + 1) state.hashDict
                             in
                             { hash = hashText state.hash result.hash
                             , hashDict = result.hashDict
                             }
                         )
-                        { hash = delimiter ++ hash, hashDict = hashDict }
+                        { hash = delimiter ++ hash, hashDict = hashDict_ }
                         nodes
             in
             { hash = finalResult.hash
             , hashDict = insert finalResult.hash { depth = depth, range = range } finalResult.hashDict
             }
 
-        hashHelper =
-            hashStuff (hashExpression context)
+        hashHelper hash nodes =
+            hashStuff
+                hashDict
+                hash
+                (List.map (hashExpression context) nodes)
     in
     case expression of
         UnitExpr ->
@@ -245,10 +251,13 @@ hashExpression context depth (Node range expression) hashDict =
             hashHelper ("13" ++ delimiter) nodes
 
         ParenthesizedExpression node ->
-            hashExpression context (depth + 1) node hashDict
+            hashExpression context node (depth + 1) hashDict
 
         LetExpression letBlock ->
-            hashStuff (hashLetDeclaration context) ("14" ++ delimiter) letBlock.declarations
+            hashStuff
+                hashDict
+                ("14" ++ delimiter)
+                (hashExpression context letBlock.expression :: List.map (hashLetDeclaration context) letBlock.declarations)
 
         CaseExpression caseBlock ->
             let
@@ -302,11 +311,11 @@ hashExpression context depth (Node range expression) hashDict =
 
 hashLetDeclaration :
     ModuleContext
-    -> Int
     -> Node LetDeclaration
+    -> Int
     -> Dict String (Nonempty HashData)
     -> { hash : String, hashDict : Dict String (Nonempty HashData) }
-hashLetDeclaration context depth (Node range letDeclaration) hashDict =
+hashLetDeclaration context (Node range letDeclaration) depth hashDict =
     case letDeclaration of
         LetFunction letFunction ->
             hashFunction context range letFunction hashDict
@@ -314,7 +323,7 @@ hashLetDeclaration context depth (Node range letDeclaration) hashDict =
         LetDestructuring pattern expression ->
             let
                 result =
-                    hashExpression context (depth + 1) expression hashDict
+                    hashExpression context expression (depth + 1) hashDict
 
                 newHash =
                     hashText (hashPattern context pattern) result.hash
@@ -567,28 +576,3 @@ heuristic config nonempty =
 
     else
         0
-
-
-{-| Given a function to map a type to a comparable type, find the **first**
-minimum element in a non-empty list.
-
-Copied from <https://github.com/langyu-app/elm-ancillary-nonempty-list>
-
--}
-nonemptyMinimumBy : (a -> comparable) -> Nonempty a -> a
-nonemptyMinimumBy f (Nonempty l ls) =
-    let
-        step : a -> ( a, comparable ) -> ( a, comparable )
-        step x (( _, fY ) as acc) =
-            let
-                fX : comparable
-                fX =
-                    f x
-            in
-            if fX < fY then
-                ( x, fX )
-
-            else
-                acc
-    in
-    Tuple.first <| List.foldl step ( l, f l ) ls
