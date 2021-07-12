@@ -17,5 +17,5 @@ import Review.Rule exposing (Rule)
 
 config : List Rule
 config =
-    [ RemoveDuplicateCode.rule
+    [ RemoveDuplicateCode.rule { ignore = [] }
     ]

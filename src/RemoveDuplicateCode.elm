@@ -35,10 +35,10 @@ elm-review --template MartinSStewart/elm-review-remove-duplicate-code/example --
 ```
 
 -}
-rule : Rule
-rule =
+rule : Config -> Rule
+rule config =
     Rule.newProjectRuleSchema "RemoveDuplicateCode" initProject
-        |> Rule.withModuleVisitor moduleVisitor
+        |> Rule.withModuleVisitor (moduleVisitor config)
         |> Rule.withModuleContextUsingContextCreator
             { fromProjectToModule =
                 Rule.initContextCreator fromProjectToModule
@@ -50,8 +50,17 @@ rule =
                     |> Rule.withMetadata
             , foldProjectContexts = foldProjectContexts
             }
-        |> Rule.withFinalProjectEvaluation finalEvaluation
+        |> Rule.withFinalProjectEvaluation (finalEvaluation config)
         |> Rule.fromProjectRuleSchema
+
+
+type ModuleIgnoreType
+    = OnlyThisModule
+    | IncludeSubmodules
+
+
+type alias Config =
+    { ignore : List ( ModuleIgnoreType, List String ) }
 
 
 initProject : ProjectContext
@@ -59,13 +68,27 @@ initProject =
     { moduleKeys = Dict.empty, hashedModules = Dict.empty }
 
 
-moduleVisitor : ModuleRuleSchema {} ModuleContext -> ModuleRuleSchema { hasAtLeastOneVisitor : () } ModuleContext
-moduleVisitor =
-    Rule.withDeclarationListVisitor declarationVisitor
+moduleVisitor : Config -> ModuleRuleSchema {} ModuleContext -> ModuleRuleSchema { hasAtLeastOneVisitor : () } ModuleContext
+moduleVisitor config =
+    Rule.withDeclarationListVisitor (declarationVisitor config)
 
 
-declarationVisitor : List (Node Declaration) -> ModuleContext -> ( List (Error {}), ModuleContext )
-declarationVisitor declarations context =
+isModuleIgnored : Config -> ModuleName -> Bool
+isModuleIgnored config moduleName =
+    List.any
+        (\( ignoreType, moduleName_ ) ->
+            case ignoreType of
+                OnlyThisModule ->
+                    moduleName_ == moduleName
+
+                IncludeSubmodules ->
+                    List.take (List.length moduleName_) moduleName == moduleName
+        )
+        config.ignore
+
+
+declarationVisitor : Config -> List (Node Declaration) -> ModuleContext -> ( List (Error {}), ModuleContext )
+declarationVisitor _ declarations context =
     ( []
     , { context
         | hashedExpressions =
@@ -180,7 +203,11 @@ hashExpression context depth (Node range expression) hashDict =
             hashHelper ("1" ++ delimiter) nodes
 
         OperatorApplication string _ left right ->
-            hashHelper ("2" ++ delimiter ++ string) [ left, right ]
+            if string == "<|" then
+                hashHelper ("2" ++ delimiter ++ "|>") [ right, left ]
+
+            else
+                hashHelper ("2" ++ delimiter ++ string) [ left, right ]
 
         FunctionOrValue moduleName name ->
             { hash = "3" ++ delimiter ++ canonicalName context range moduleName name
@@ -430,14 +457,14 @@ addRanges nonempty dict =
             dict
 
 
-finalEvaluation : ProjectContext -> List (Error { useErrorForModule : () })
-finalEvaluation projectContext =
+finalEvaluation : Config -> ProjectContext -> List (Error { useErrorForModule : () })
+finalEvaluation config projectContext =
     let
         potentialErrors : List ( String, Nonempty ProjectHashData )
         potentialErrors =
             Dict.toList projectContext.hashedModules
-                |> List.filter (Tuple.second >> passesHeuristic)
-                |> List.sortBy (Tuple.second >> heuristic >> negate)
+                |> List.filter (Tuple.second >> passesHeuristic config)
+                |> List.sortBy (Tuple.second >> heuristic config >> negate)
     in
     potentialErrors
         |> List.foldl
@@ -458,7 +485,7 @@ finalEvaluation projectContext =
                 in
                 case List.Nonempty.fromList usedRangesRemoved of
                     Just newPotentialErrors ->
-                        if passesHeuristic newPotentialErrors then
+                        if passesHeuristic config newPotentialErrors then
                             ( potentialError :: errors, addRanges newPotentialErrors moduleRanges )
 
                         else
@@ -508,16 +535,19 @@ finalEvaluation projectContext =
             )
 
 
-passesHeuristic : Nonempty ProjectHashData -> Bool
-passesHeuristic nonempty =
-    heuristic nonempty > 2000
+passesHeuristic : Config -> Nonempty ProjectHashData -> Bool
+passesHeuristic config nonempty =
+    heuristic config nonempty > 2000
 
 
-heuristic : Nonempty ProjectHashData -> Float
-heuristic nonempty =
+heuristic : Config -> Nonempty ProjectHashData -> Float
+heuristic config nonempty =
     let
+        filtered =
+            List.Nonempty.toList nonempty |> List.filter (.moduleName >> isModuleIgnored config >> not)
+
         minimumRange =
-            List.Nonempty.map
+            List.map
                 (\{ range } ->
                     if range.start.row == range.end.row then
                         range.end.column - range.start.column
@@ -525,11 +555,12 @@ heuristic nonempty =
                     else
                         (range.end.row - range.start.row) * 100
                 )
-                nonempty
-                |> nonemptyMinimumBy identity
+                filtered
+                |> List.minimum
+                |> Maybe.withDefault 0
 
         count =
-            List.Nonempty.length nonempty
+            List.length filtered
     in
     if count > 1 then
         logBase 2 (toFloat count) * toFloat minimumRange
