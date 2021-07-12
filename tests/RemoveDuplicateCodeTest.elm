@@ -1,6 +1,6 @@
 module RemoveDuplicateCodeTest exposing (all)
 
-import RemoveDuplicateCode exposing (rule)
+import RemoveDuplicateCode
 import Review.Test
 import Test exposing (Test, describe, test)
 
@@ -8,17 +8,71 @@ import Test exposing (Test, describe, test)
 all : Test
 all =
     describe "RemoveDuplicateCode"
-        [ test "should report an error when REPLACEME" <|
-            \() ->
-                """module A exposing (..)
-a = 1
+        [ test "distinguish local types" <|
+            \_ ->
+                [ """module A exposing (..)
+                
+type MyType = A | B | C | D | E | F | G | H
+
+
+myType value = 
+    case value of 
+        A -> 
+            0
+        
+        B -> 
+            1
+
+        C -> 
+            0
+        
+        D -> 
+            1
+            
+        E -> 
+            0
+        
+        F -> 
+            1
+            
+        G -> 
+            0
+        
+        H -> 
+            1
 """
-                    |> Review.Test.run rule
-                    |> Review.Test.expectErrors
-                        [ Review.Test.error
-                            { message = "REPLACEME"
-                            , details = [ "REPLACEME" ]
-                            , under = "REPLACEME"
-                            }
-                        ]
+                , """module B exposing (..)
+                      
+type MyType = A | B | C | D | E | F | G | H
+
+
+myType value = 
+    case value of 
+        A -> 
+            0
+        
+        B -> 
+            1
+        
+        C -> 
+            0
+        
+        D -> 
+            1
+          
+        E -> 
+            0
+        
+        F -> 
+            1
+          
+        G -> 
+            0
+        
+        H -> 
+            1
+"""
+                ]
+                    |> Review.Test.runOnModules RemoveDuplicateCode.rule
+                    |> Review.Test.expectNoErrors
         ]

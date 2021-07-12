@@ -470,7 +470,7 @@ finalEvaluation projectContext =
                             posToString position =
                                 String.fromInt position.row ++ ":" ++ String.fromInt position.column
 
-                            restOfExamplesText =
+                            allExamples =
                                 List.map
                                     (\example ->
                                         "\n"
@@ -480,15 +480,15 @@ finalEvaluation projectContext =
                                             ++ " to "
                                             ++ posToString example.range.end
                                     )
-                                    restOfExamples
+                                    (firstExample :: restOfExamples)
                                     |> String.concat
                         in
                         Rule.errorForModule moduleKey
                             { message =
                                 "Found code that is repeated too often ("
                                     ++ String.fromInt (List.length restOfExamples + 1)
-                                    ++ " times) and can instead be combined into a single function.\n\nHere are other places it's used:\n"
-                                    ++ restOfExamplesText
+                                    ++ " times) and can instead be combined into a single function.\n\nHere are all the places it's used:\n"
+                                    ++ allExamples
                             , details =
                                 [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too often and it would be better to have a single function for it."
                                 ]
