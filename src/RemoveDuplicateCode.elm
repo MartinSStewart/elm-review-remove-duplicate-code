@@ -16,6 +16,7 @@ import Elm.Syntax.ModuleName exposing (ModuleName)
 import Elm.Syntax.Node as Node exposing (Node(..))
 import Elm.Syntax.Pattern exposing (Pattern(..))
 import Elm.Syntax.Range exposing (Range)
+import List.Extra as List
 import List.Nonempty exposing (Nonempty(..))
 import MD5
 import Review.ModuleNameLookupTable exposing (ModuleNameLookupTable)
@@ -68,7 +69,7 @@ type alias Config =
 
 initProject : ProjectContext
 initProject =
-    { moduleKeys = Dict.empty, hashedModules = Dict.empty }
+    { moduleData = Dict.empty, hashedModules = Dict.empty }
 
 
 moduleVisitor : Config -> ModuleRuleSchema {} ModuleContext -> ModuleRuleSchema { hasAtLeastOneVisitor : () } ModuleContext
@@ -120,7 +121,7 @@ hashFunction context range function hashDict =
             Node.value function.declaration
 
         result =
-            hashExpression context implementation.expression 1 hashDict
+            hashExpression context implementation.expression hashDict
 
         newHash =
             hashText (Node.value implementation.name) result.hash
@@ -129,7 +130,7 @@ hashFunction context range function hashDict =
     , hashDict =
         insert
             newHash
-            { depth = 0, range = range }
+            { range = range }
             result.hashDict
     }
 
@@ -165,15 +166,14 @@ canonicalName context range moduleName name =
 hashExpression :
     ModuleContext
     -> Node Expression
-    -> Int
     -> Dict String (Nonempty HashData)
     -> { hash : String, hashDict : Dict String (Nonempty HashData) }
-hashExpression context (Node range expression) depth hashDict =
+hashExpression context (Node range expression) hashDict =
     let
         hashStuff :
             Dict String (Nonempty HashData)
             -> String
-            -> List (Int -> Dict String (Nonempty HashData) -> { hash : String, hashDict : Dict String (Nonempty HashData) })
+            -> List (Dict String (Nonempty HashData) -> { hash : String, hashDict : Dict String (Nonempty HashData) })
             -> { hash : String, hashDict : Dict String (Nonempty HashData) }
         hashStuff hashDict_ hash nodes =
             let
@@ -182,7 +182,7 @@ hashExpression context (Node range expression) depth hashDict =
                         (\node state ->
                             let
                                 result =
-                                    node (depth + 1) state.hashDict
+                                    node state.hashDict
                             in
                             { hash = hashText state.hash result.hash
                             , hashDict = result.hashDict
@@ -192,7 +192,7 @@ hashExpression context (Node range expression) depth hashDict =
                         nodes
             in
             { hash = finalResult.hash
-            , hashDict = insert finalResult.hash { depth = depth, range = range } finalResult.hashDict
+            , hashDict = insert finalResult.hash { range = range } finalResult.hashDict
             }
 
         hashHelper hash nodes =
@@ -251,7 +251,7 @@ hashExpression context (Node range expression) depth hashDict =
             hashHelper ("13" ++ delimiter) nodes
 
         ParenthesizedExpression node ->
-            hashExpression context node (depth + 1) hashDict
+            hashExpression context node hashDict
 
         LetExpression letBlock ->
             hashStuff
@@ -312,10 +312,9 @@ hashExpression context (Node range expression) depth hashDict =
 hashLetDeclaration :
     ModuleContext
     -> Node LetDeclaration
-    -> Int
     -> Dict String (Nonempty HashData)
     -> { hash : String, hashDict : Dict String (Nonempty HashData) }
-hashLetDeclaration context (Node range letDeclaration) depth hashDict =
+hashLetDeclaration context (Node range letDeclaration) hashDict =
     case letDeclaration of
         LetFunction letFunction ->
             hashFunction context range letFunction hashDict
@@ -323,12 +322,12 @@ hashLetDeclaration context (Node range letDeclaration) depth hashDict =
         LetDestructuring pattern expression ->
             let
                 result =
-                    hashExpression context expression (depth + 1) hashDict
+                    hashExpression context expression hashDict
 
                 newHash =
                     hashText (hashPattern context pattern) result.hash
             in
-            { hash = newHash, hashDict = insert newHash { depth = depth, range = range } result.hashDict }
+            { hash = newHash, hashDict = insert newHash { range = range } result.hashDict }
 
 
 hashPattern : ModuleContext -> Node Pattern -> String
@@ -410,7 +409,12 @@ fromProjectToModule lookupTable metadata _ =
 
 fromModuleToProject : Rule.ModuleKey -> Rule.Metadata -> ModuleContext -> ProjectContext
 fromModuleToProject moduleKey metadata moduleContext =
-    { moduleKeys = Dict.singleton (Rule.moduleNameFromMetadata metadata) moduleKey
+    { moduleData =
+        Dict.singleton
+            (Rule.moduleNameFromMetadata metadata)
+            { moduleKey = moduleKey
+            , isInSourceDirectories = Rule.isInSourceDirectories metadata
+            }
     , hashedModules =
         Dict.map
             (\_ value -> List.Nonempty.map (toProjectHashData (Rule.moduleNameFromMetadata metadata)) value)
@@ -420,12 +424,12 @@ fromModuleToProject moduleKey metadata moduleContext =
 
 toProjectHashData : ModuleName -> HashData -> ProjectHashData
 toProjectHashData moduleName hashData =
-    { moduleName = moduleName, depth = hashData.depth, range = hashData.range }
+    { moduleName = moduleName, range = hashData.range }
 
 
 foldProjectContexts : ProjectContext -> ProjectContext -> ProjectContext
 foldProjectContexts contextA contextB =
-    { moduleKeys = Dict.union contextA.moduleKeys contextB.moduleKeys
+    { moduleData = Dict.union contextA.moduleData contextB.moduleData
     , hashedModules =
         Dict.merge
             (\_ _ result -> result)
@@ -438,7 +442,7 @@ foldProjectContexts contextA contextB =
 
 
 type alias ProjectContext =
-    { moduleKeys : Dict ModuleName Rule.ModuleKey, hashedModules : Dict String (Nonempty ProjectHashData) }
+    { moduleData : Dict ModuleName { moduleKey : Rule.ModuleKey, isInSourceDirectories : Bool }, hashedModules : Dict String (Nonempty ProjectHashData) }
 
 
 type alias ModuleContext =
@@ -449,11 +453,11 @@ type alias ModuleContext =
 
 
 type alias HashData =
-    { depth : Int, range : Range }
+    { range : Range }
 
 
 type alias ProjectHashData =
-    { moduleName : ModuleName, depth : Int, range : Range }
+    { moduleName : ModuleName, range : Range }
 
 
 addRanges : Nonempty ProjectHashData -> Dict ModuleName (Nonempty Range) -> Dict ModuleName (Nonempty Range)
@@ -472,8 +476,8 @@ finalEvaluation config projectContext =
         potentialErrors : List ( String, Nonempty ProjectHashData )
         potentialErrors =
             Dict.toList projectContext.hashedModules
-                |> List.filter (Tuple.second >> passesHeuristic config)
-                |> List.sortBy (Tuple.second >> heuristic config >> negate)
+                |> List.filter (Tuple.second >> passesHeuristic config projectContext)
+                |> List.sortBy (Tuple.second >> heuristic config projectContext >> negate)
     in
     potentialErrors
         |> List.foldl
@@ -494,7 +498,7 @@ finalEvaluation config projectContext =
                 in
                 case List.Nonempty.fromList usedRangesRemoved of
                     Just newPotentialErrors ->
-                        if passesHeuristic config newPotentialErrors then
+                        if passesHeuristic config projectContext newPotentialErrors then
                             ( potentialError :: errors, addRanges newPotentialErrors moduleRanges )
 
                         else
@@ -507,8 +511,8 @@ finalEvaluation config projectContext =
         |> Tuple.first
         |> List.filterMap
             (\(Nonempty firstExample restOfExamples) ->
-                case Dict.get firstExample.moduleName projectContext.moduleKeys of
-                    Just moduleKey ->
+                case Dict.get firstExample.moduleName projectContext.moduleData of
+                    Just { moduleKey } ->
                         let
                             posToString position =
                                 String.fromInt position.row ++ ":" ++ String.fromInt position.column
@@ -544,13 +548,13 @@ finalEvaluation config projectContext =
             )
 
 
-passesHeuristic : Config -> Nonempty ProjectHashData -> Bool
-passesHeuristic config nonempty =
-    heuristic config nonempty > 2000
+passesHeuristic : Config -> ProjectContext -> Nonempty ProjectHashData -> Bool
+passesHeuristic config context nonempty =
+    heuristic config context nonempty > 2000
 
 
-heuristic : Config -> Nonempty ProjectHashData -> Float
-heuristic config nonempty =
+heuristic : Config -> ProjectContext -> Nonempty ProjectHashData -> Float
+heuristic config context nonempty =
     let
         filtered =
             List.Nonempty.toList nonempty |> List.filter (.moduleName >> isModuleIgnored config >> not)
@@ -568,11 +572,51 @@ heuristic config nonempty =
                 |> List.minimum
                 |> Maybe.withDefault 0
 
+        testCount =
+            filtered
+                |> listCount
+                    (\a ->
+                        case Dict.get a.moduleName context.moduleData of
+                            Just { isInSourceDirectories } ->
+                                not isInSourceDirectories
+
+                            Nothing ->
+                                False
+                    )
+
         count =
             List.length filtered
     in
     if count > 1 then
-        logBase 2 (toFloat count) * toFloat minimumRange
+        logBase 2 (toFloat count - toFloat testCount * 0.5) * toFloat minimumRange
 
     else
+        0
+
+
+{-| Returns the number of elements in a list that satisfy a given predicate.
+Equivalent to `List.length (List.filter pred list)` but more efficient.
+
+    count
+        (modBy 2 >> (==) 1) [ 1, 2, 3, 4, 5, 6, 7 ]
+    --> 4
+
+    count
+        ((==) "yeah")
+        [ "She", "loves", "you", "yeah", "yeah", "yeah" ]
+    --> 3
+
+Copied from elm-community/list-extra
+
+-}
+listCount : (a -> Bool) -> List a -> Int
+listCount predicate =
+    List.foldl
+        (\x acc ->
+            if predicate x then
+                acc + 1
+
+            else
+                acc
+        )
         0
