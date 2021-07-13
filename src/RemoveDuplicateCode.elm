@@ -16,7 +16,6 @@ import Elm.Syntax.ModuleName exposing (ModuleName)
 import Elm.Syntax.Node as Node exposing (Node(..))
 import Elm.Syntax.Pattern exposing (Pattern(..))
 import Elm.Syntax.Range exposing (Range)
-import List.Extra as List
 import List.Nonempty exposing (Nonempty(..))
 import MD5
 import Review.ModuleNameLookupTable exposing (ModuleNameLookupTable)
@@ -64,7 +63,7 @@ type ModuleIgnoreType
 
 
 type alias Config =
-    { ignore : List ( ModuleIgnoreType, List String ) }
+    { ignore : List ( ModuleIgnoreType, List String ), threshold : Float }
 
 
 initProject : ProjectContext
@@ -550,7 +549,7 @@ finalEvaluation config projectContext =
 
 passesHeuristic : Config -> ProjectContext -> Nonempty ProjectHashData -> Bool
 passesHeuristic config context nonempty =
-    heuristic config context nonempty > 2000
+    heuristic config context nonempty > config.threshold
 
 
 heuristic : Config -> ProjectContext -> Nonempty ProjectHashData -> Float
