@@ -590,11 +590,11 @@ heuristic config context nonempty =
         count =
             List.length filtered
     in
-    if count > 1 then
-        logBase 2 (toFloat count - toFloat testCount * 0.5) * toFloat minimumRange
+    if count < 3 then
+        0
 
     else
-        0
+        logBase 2 (toFloat count - toFloat testCount * 0.5) * toFloat minimumRange
 
 
 {-| Returns the number of elements in a list that satisfy a given predicate.
