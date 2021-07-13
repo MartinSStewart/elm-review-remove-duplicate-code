@@ -148,13 +148,13 @@ delimiter =
 
 canonicalName : ModuleContext -> Range -> List String -> String -> String
 canonicalName context range moduleName name =
-    let
-        _ =
-            Debug.log "" ( name, Review.ModuleNameLookupTable.moduleNameAt context.lookupTable range )
-    in
     (case Review.ModuleNameLookupTable.moduleNameAt context.lookupTable range of
         Just [] ->
-            context.currentModule
+            if String.toList name |> List.head |> Maybe.map Char.isUpper |> Maybe.withDefault False then
+                context.currentModule
+
+            else
+                []
 
         Just moduleName_ ->
             moduleName_

@@ -75,10 +75,9 @@ myType value =
                 ]
                     |> Review.Test.runOnModules (RemoveDuplicateCode.rule { ignore = [], threshold = 200 })
                     |> Review.Test.expectNoErrors
-        , only <|
-            test "distinguish local types 2" <|
-                \_ ->
-                    [ """module A exposing (..)
+        , test "distinguish local types 2" <|
+            \_ ->
+                [ """module A exposing (..)
 
 errorMessage : Bool -> Result String b -> Element msg
 errorMessage submitAttempted result =
@@ -90,7 +89,7 @@ errorMessage submitAttempted result =
             Element.none
 
         """
-                    , """module B exposing (..)
+                , """module B exposing (..)
 
 errorMessage : Bool -> Result String b -> Element msg
 errorMessage submitAttempted result =
@@ -102,16 +101,28 @@ errorMessage submitAttempted result =
             Element.none
 
         """
-                    ]
-                        |> Review.Test.runOnModules (RemoveDuplicateCode.rule { ignore = [], threshold = 200 })
-                        |> Review.Test.expectErrorsForModules
-                            [ ( "B"
-                              , [ Review.Test.error
-                                    { message = ""
-                                    , details = []
-                                    , under = ""
-                                    }
-                                ]
-                              )
+                ]
+                    |> Review.Test.runOnModules (RemoveDuplicateCode.rule { ignore = [], threshold = 200 })
+                    |> Review.Test.expectErrorsForModules
+                        [ ( "B"
+                          , [ Review.Test.error
+                                { message = """Found code that is repeated too often (2 times) and can instead be combined into a single function.
+
+Here are all the places it's used:
+
+B 3:1 to 10:25
+A 3:1 to 10:25"""
+                                , details = [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too often and it would be better to have a single function for it." ]
+                                , under = """errorMessage : Bool -> Result String b -> Element msg
+errorMessage submitAttempted result =
+    case ( submitAttempted, result ) of
+        ( True, Err error ) ->
+            DesignSystem.Input.errorMessage error
+
+        _ ->
+            Element.none"""
+                                }
                             ]
+                          )
+                        ]
         ]
