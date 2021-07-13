@@ -40,7 +40,7 @@ myType value =
         
         H -> 
             1
-"""
+""" |> String.replace "\u{000D}" ""
                 , """module B exposing (..)
                       
 type MyType = A | B | C | D | E | F | G | H
@@ -71,7 +71,7 @@ myType value =
         
         H -> 
             1
-"""
+""" |> String.replace "\u{000D}" ""
                 , """module C exposing (..)
                       
 type MyType = A | B | C | D | E | F | G | H
@@ -102,9 +102,9 @@ myType value =
         
         H -> 
             1
-    """
+    """ |> String.replace "\u{000D}" ""
                 ]
-                    |> Review.Test.runOnModules (RemoveDuplicateCode.rule { ignore = [], threshold = 200 })
+                    |> Review.Test.runOnModules (RemoveDuplicateCode.rule { ignore = [], threshold = 1 })
                     |> Review.Test.expectNoErrors
         , test "distinguish local types 2" <|
             \_ ->
@@ -119,7 +119,7 @@ errorMessage submitAttempted result =
         _ ->
             Element.none
 
-"""
+""" |> String.replace "\u{000D}" ""
                 , """module B exposing (..)
 
 errorMessage : Bool -> Result String b -> Element msg
@@ -131,7 +131,7 @@ errorMessage submitAttempted result =
         _ ->
             Element.none
 
-"""
+""" |> String.replace "\u{000D}" ""
                 , """module C exposing (..)
 
 errorMessage : Bool -> Result String b -> Element msg
@@ -143,9 +143,9 @@ errorMessage submitAttempted result =
         _ ->
             Element.none
 
-"""
+""" |> String.replace "\u{000D}" ""
                 ]
-                    |> Review.Test.runOnModules (RemoveDuplicateCode.rule { ignore = [], threshold = 200 })
+                    |> Review.Test.runOnModules (RemoveDuplicateCode.rule { ignore = [], threshold = 1 })
                     |> Review.Test.expectErrorsForModules
                         [ ( "C"
                           , [ Review.Test.error
@@ -155,8 +155,11 @@ Here are all the places it's used:
 
 C 3:1 to 10:25
 B 3:1 to 10:25
-A 3:1 to 10:25"""
-                                , details = [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too often and it would be better to have a single function for it." ]
+A 3:1 to 10:25""" |> String.replace "\u{000D}" ""
+                                , details =
+                                    [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too often and it would be better to have a single function for it."
+                                    , "Debug info: This error has 25 complexity."
+                                    ]
                                 , under = """errorMessage : Bool -> Result String b -> Element msg
 errorMessage submitAttempted result =
     case ( submitAttempted, result ) of
@@ -164,7 +167,7 @@ errorMessage submitAttempted result =
             DesignSystem.Input.errorMessage error
 
         _ ->
-            Element.none"""
+            Element.none""" |> String.replace "\u{000D}" ""
                                 }
                             ]
                           )

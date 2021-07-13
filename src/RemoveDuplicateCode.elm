@@ -63,7 +63,7 @@ type ModuleIgnoreType
 
 
 type alias Config =
-    { ignore : List ( ModuleIgnoreType, List String ), threshold : Float }
+    { ignore : List ( ModuleIgnoreType, List String ), threshold : Int }
 
 
 initProject : ProjectContext
@@ -113,7 +113,7 @@ hashDeclaration context (Node range declaration) hashDict =
             hashDict
 
 
-hashFunction : ModuleContext -> Range -> Function -> Dict String (Nonempty HashData) -> { hash : String, hashDict : Dict String (Nonempty HashData) }
+hashFunction : ModuleContext -> Range -> Function -> Dict String (Nonempty HashData) -> ReturnData
 hashFunction context range function hashDict =
     let
         implementation =
@@ -126,10 +126,11 @@ hashFunction context range function hashDict =
             hashText (Node.value implementation.name) result.hash
     in
     { hash = newHash
+    , complexity = result.complexity + 1
     , hashDict =
         insert
             newHash
-            { range = range }
+            { range = range, complexity = result.complexity + 1 }
             result.hashDict
     }
 
@@ -170,15 +171,16 @@ hashExpression :
     ModuleContext
     -> Node Expression
     -> Dict String (Nonempty HashData)
-    -> { hash : String, hashDict : Dict String (Nonempty HashData) }
+    -> ReturnData
 hashExpression context (Node range expression) hashDict =
     let
         hashStuff :
             Dict String (Nonempty HashData)
             -> String
-            -> List (Dict String (Nonempty HashData) -> { hash : String, hashDict : Dict String (Nonempty HashData) })
-            -> { hash : String, hashDict : Dict String (Nonempty HashData) }
-        hashStuff hashDict_ hash nodes =
+            -> Int
+            -> List (Dict String (Nonempty HashData) -> ReturnData)
+            -> ReturnData
+        hashStuff hashDict_ hash addedComplexity nodes =
             let
                 finalResult =
                     List.foldl
@@ -188,70 +190,77 @@ hashExpression context (Node range expression) hashDict =
                                     node state.hashDict
                             in
                             { hash = hashText state.hash result.hash
+                            , complexity = result.complexity + state.complexity
                             , hashDict = result.hashDict
                             }
                         )
-                        { hash = delimiter ++ hash, hashDict = hashDict_ }
+                        { hash = delimiter ++ hash, complexity = addedComplexity, hashDict = hashDict_ }
                         nodes
+
+                complexity =
+                    finalResult.complexity + List.length nodes
             in
             { hash = finalResult.hash
-            , hashDict = insert finalResult.hash { range = range } finalResult.hashDict
+            , complexity = complexity
+            , hashDict = insert finalResult.hash { range = range, complexity = complexity } finalResult.hashDict
             }
 
-        hashHelper hash nodes =
+        hashHelper hash addedComplexity nodes =
             hashStuff
                 hashDict
                 hash
+                addedComplexity
                 (List.map (hashExpression context) nodes)
     in
     case expression of
         UnitExpr ->
-            { hash = "0" ++ delimiter, hashDict = hashDict }
+            { hash = "0" ++ delimiter, complexity = 1, hashDict = hashDict }
 
         Application nodes ->
-            hashHelper ("1" ++ delimiter) nodes
+            hashHelper ("1" ++ delimiter) 0 nodes
 
         OperatorApplication string _ left right ->
             if string == "<|" then
-                hashHelper ("2" ++ delimiter ++ "|>") [ right, left ]
+                hashHelper ("2" ++ delimiter ++ "|>") 1 [ right, left ]
 
             else
-                hashHelper ("2" ++ delimiter ++ string) [ left, right ]
+                hashHelper ("2" ++ delimiter ++ string) 1 [ left, right ]
 
         FunctionOrValue moduleName name ->
             { hash = "3" ++ delimiter ++ canonicalName context range moduleName name
+            , complexity = 1
             , hashDict = hashDict
             }
 
         IfBlock condition ifTrue ifFalse ->
-            hashHelper ("4" ++ delimiter) [ condition, ifTrue, ifFalse ]
+            hashHelper ("4" ++ delimiter) 2 [ condition, ifTrue, ifFalse ]
 
         PrefixOperator string ->
-            { hash = "5" ++ delimiter ++ string, hashDict = hashDict }
+            { hash = "5" ++ delimiter ++ string, complexity = 1, hashDict = hashDict }
 
         Operator string ->
-            { hash = "6" ++ delimiter ++ string, hashDict = hashDict }
+            { hash = "6" ++ delimiter ++ string, complexity = 1, hashDict = hashDict }
 
         Integer int ->
-            { hash = "7" ++ delimiter ++ String.fromInt int, hashDict = hashDict }
+            { hash = "7" ++ delimiter ++ String.fromInt int, complexity = 1, hashDict = hashDict }
 
         Hex int ->
-            { hash = "8" ++ delimiter ++ String.fromInt int, hashDict = hashDict }
+            { hash = "8" ++ delimiter ++ String.fromInt int, complexity = 1, hashDict = hashDict }
 
         Floatable float ->
-            { hash = "9" ++ delimiter ++ String.fromFloat float, hashDict = hashDict }
+            { hash = "9" ++ delimiter ++ String.fromFloat float, complexity = 1, hashDict = hashDict }
 
         Negation node ->
-            hashHelper ("10" ++ delimiter) [ node ]
+            hashHelper ("10" ++ delimiter) 1 [ node ]
 
         Literal string ->
-            { hash = "11" ++ delimiter ++ string, hashDict = hashDict }
+            { hash = "11" ++ delimiter ++ string, complexity = String.words string |> List.length, hashDict = hashDict }
 
         CharLiteral char ->
-            { hash = "12" ++ delimiter ++ String.fromChar char, hashDict = hashDict }
+            { hash = "12" ++ delimiter ++ String.fromChar char, complexity = 1, hashDict = hashDict }
 
         TupledExpression nodes ->
-            hashHelper ("13" ++ delimiter) nodes
+            hashHelper ("13" ++ delimiter) 1 nodes
 
         ParenthesizedExpression node ->
             hashExpression context node hashDict
@@ -260,21 +269,34 @@ hashExpression context (Node range expression) hashDict =
             hashStuff
                 hashDict
                 ("14" ++ delimiter)
+                1
                 (hashExpression context letBlock.expression :: List.map (hashLetDeclaration context) letBlock.declarations)
 
         CaseExpression caseBlock ->
             let
+                hashPatternResults =
+                    List.map (Tuple.first >> hashPattern context) caseBlock.cases
+
                 patternHash =
-                    List.map (Tuple.first >> hashPattern context) caseBlock.cases |> String.join ","
+                    List.map .hash hashPatternResults |> String.join ","
+
+                complexity =
+                    List.map .complexity hashPatternResults |> List.sum
             in
-            hashHelper ("15" ++ delimiter ++ patternHash) (caseBlock.expression :: List.map Tuple.second caseBlock.cases)
+            hashHelper ("15" ++ delimiter ++ patternHash) complexity (caseBlock.expression :: List.map Tuple.second caseBlock.cases)
 
         LambdaExpression lambda ->
             let
+                hashPatternResults =
+                    List.map (hashPattern context) lambda.args
+
                 argsHash =
-                    List.map (hashPattern context) lambda.args |> String.join " "
+                    List.map .hash hashPatternResults |> String.join " "
+
+                complexity =
+                    List.map .complexity hashPatternResults |> List.sum
             in
-            hashHelper ("16" ++ delimiter ++ argsHash) [ lambda.expression ]
+            hashHelper ("16" ++ delimiter ++ argsHash) complexity [ lambda.expression ]
 
         RecordExpr nodes ->
             let
@@ -285,16 +307,16 @@ hashExpression context (Node range expression) hashDict =
                     List.map (Node.value >> Tuple.first >> Node.value) sorted |> String.join " "
             in
             List.map (Node.value >> Tuple.second) sorted
-                |> hashHelper ("17" ++ delimiter ++ fieldNames)
+                |> hashHelper ("17" ++ delimiter ++ fieldNames) 1
 
         ListExpr nodes ->
-            hashHelper ("18" ++ delimiter) nodes
+            hashHelper ("18" ++ delimiter) 1 nodes
 
         RecordAccess value (Node _ accessor) ->
-            hashHelper ("19" ++ delimiter ++ accessor) [ value ]
+            hashHelper ("19" ++ delimiter ++ accessor) 1 [ value ]
 
         RecordAccessFunction string ->
-            { hash = "20" ++ delimiter ++ string, hashDict = hashDict }
+            { hash = "20" ++ delimiter ++ string, complexity = 1, hashDict = hashDict }
 
         RecordUpdateExpression (Node _ record) nodes ->
             let
@@ -306,17 +328,17 @@ hashExpression context (Node range expression) hashDict =
                     List.map (Node.value >> Tuple.first >> Node.value) sorted |> String.join " "
             in
             List.map (Node.value >> Tuple.second) sorted
-                |> hashHelper ("21" ++ delimiter ++ record ++ " " ++ fieldNames)
+                |> hashHelper ("21" ++ delimiter ++ record ++ " " ++ fieldNames) 2
 
         GLSLExpression string ->
-            { hash = "22" ++ delimiter ++ string, hashDict = hashDict }
+            { hash = "22" ++ delimiter ++ string, complexity = String.words string |> List.length, hashDict = hashDict }
 
 
 hashLetDeclaration :
     ModuleContext
     -> Node LetDeclaration
     -> Dict String (Nonempty HashData)
-    -> { hash : String, hashDict : Dict String (Nonempty HashData) }
+    -> ReturnData
 hashLetDeclaration context (Node range letDeclaration) hashDict =
     case letDeclaration of
         LetFunction letFunction ->
@@ -327,45 +349,75 @@ hashLetDeclaration context (Node range letDeclaration) hashDict =
                 result =
                     hashExpression context expression hashDict
 
+                hashPatternResult =
+                    hashPattern context pattern
+
                 newHash =
-                    hashText (hashPattern context pattern) result.hash
+                    hashText hashPatternResult.hash result.hash
+
+                newComplexity =
+                    result.complexity + 1 + hashPatternResult.complexity
             in
-            { hash = newHash, hashDict = insert newHash { range = range } result.hashDict }
+            { hash = newHash
+            , complexity = newComplexity
+            , hashDict =
+                insert
+                    newHash
+                    { range = range, complexity = newComplexity }
+                    result.hashDict
+            }
 
 
-hashPattern : ModuleContext -> Node Pattern -> String
+type alias ReturnData =
+    { hash : String, complexity : Int, hashDict : Dict String (Nonempty HashData) }
+
+
+hashPattern : ModuleContext -> Node Pattern -> { hash : String, complexity : Int }
 hashPattern context (Node range pattern) =
     let
         hashHelper id nodes =
-            List.foldl (\node hash -> hashText hash (hashPattern context node)) (delimiter ++ id ++ delimiter) nodes
+            List.foldl
+                (\node { hash, complexity } ->
+                    let
+                        result =
+                            hashPattern context node
+                    in
+                    { hash = hashText hash result.hash
+                    , complexity = result.complexity + complexity
+                    }
+                )
+                { hash = delimiter ++ id ++ delimiter, complexity = 0 }
+                nodes
     in
     case pattern of
         UnitPattern ->
-            "23" ++ delimiter
+            { hash = "23" ++ delimiter, complexity = 1 }
 
         AllPattern ->
-            "24" ++ delimiter
+            { hash = "24" ++ delimiter, complexity = 1 }
 
         CharPattern char ->
-            "25" ++ delimiter ++ String.fromChar char
+            { hash = "25" ++ delimiter ++ String.fromChar char, complexity = 1 }
 
         StringPattern string ->
-            "26" ++ delimiter ++ string
+            { hash = "26" ++ delimiter ++ string, complexity = String.words string |> List.length }
 
         IntPattern int ->
-            "27" ++ delimiter ++ String.fromInt int
+            { hash = "27" ++ delimiter ++ String.fromInt int, complexity = 1 }
 
         HexPattern int ->
-            "28" ++ delimiter ++ String.fromInt int
+            { hash = "28" ++ delimiter ++ String.fromInt int, complexity = 1 }
 
         FloatPattern float ->
-            "29" ++ delimiter ++ String.fromFloat float
+            { hash = "29" ++ delimiter ++ String.fromFloat float, complexity = 1 }
 
         TuplePattern nodes ->
             hashHelper "30" nodes
 
         RecordPattern fields ->
-            "31" ++ delimiter ++ (List.map Node.value fields |> List.sort |> String.join " ")
+            { hash = "31" ++ delimiter ++ (List.map Node.value fields |> List.sort |> String.join " ")
+            , complexity = 1
+            }
 
         UnConsPattern a b ->
             hashHelper "32" [ a, b ]
@@ -374,7 +426,7 @@ hashPattern context (Node range pattern) =
             hashHelper "33" nodes
 
         VarPattern var ->
-            "34" ++ delimiter ++ var
+            { hash = "34" ++ delimiter ++ var, complexity = 1 }
 
         NamedPattern qualifiedNameRef nodes ->
             hashHelper
@@ -427,7 +479,10 @@ fromModuleToProject moduleKey metadata moduleContext =
 
 toProjectHashData : ModuleName -> HashData -> ProjectHashData
 toProjectHashData moduleName hashData =
-    { moduleName = moduleName, range = hashData.range }
+    { moduleName = moduleName
+    , range = hashData.range
+    , complexity = hashData.complexity
+    }
 
 
 foldProjectContexts : ProjectContext -> ProjectContext -> ProjectContext
@@ -456,11 +511,11 @@ type alias ModuleContext =
 
 
 type alias HashData =
-    { range : Range }
+    { range : Range, complexity : Int }
 
 
 type alias ProjectHashData =
-    { moduleName : ModuleName, range : Range }
+    { moduleName : ModuleName, range : Range, complexity : Int }
 
 
 addRanges : Nonempty ProjectHashData -> Dict ModuleName (Nonempty Range) -> Dict ModuleName (Nonempty Range)
@@ -513,7 +568,7 @@ finalEvaluation config projectContext =
             ( [], Dict.empty )
         |> Tuple.first
         |> List.filterMap
-            (\(Nonempty firstExample restOfExamples) ->
+            (\((Nonempty firstExample rest) as nonempty) ->
                 case Dict.get firstExample.moduleName projectContext.moduleData of
                     Just { moduleKey } ->
                         let
@@ -530,17 +585,18 @@ finalEvaluation config projectContext =
                                             ++ " to "
                                             ++ posToString example.range.end
                                     )
-                                    (firstExample :: restOfExamples)
+                                    (firstExample :: rest)
                                     |> String.concat
                         in
                         Rule.errorForModule moduleKey
                             { message =
                                 "Found code that is repeated too often ("
-                                    ++ String.fromInt (List.length restOfExamples + 1)
+                                    ++ String.fromInt (List.Nonempty.length nonempty)
                                     ++ " times) and can instead be combined into a single function.\n\nHere are all the places it's used:\n"
                                     ++ allExamples
                             , details =
                                 [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too often and it would be better to have a single function for it."
+                                , "Debug info: This error has " ++ String.fromInt (heuristic config projectContext nonempty) ++ " complexity." |> Debug.log ""
                                 ]
                             }
                             firstExample.range
@@ -556,24 +612,11 @@ passesHeuristic config context nonempty =
     heuristic config context nonempty > config.threshold
 
 
-heuristic : Config -> ProjectContext -> Nonempty ProjectHashData -> Float
+heuristic : Config -> ProjectContext -> Nonempty ProjectHashData -> Int
 heuristic config context nonempty =
     let
         filtered =
             List.Nonempty.toList nonempty |> List.filter (.moduleName >> isModuleIgnored config >> not)
-
-        minimumRange =
-            List.map
-                (\{ range } ->
-                    if range.start.row == range.end.row then
-                        range.end.column - range.start.column
-
-                    else
-                        (range.end.row - range.start.row) * 100
-                )
-                filtered
-                |> List.minimum
-                |> Maybe.withDefault 0
 
         testCount =
             filtered
@@ -587,6 +630,9 @@ heuristic config context nonempty =
                                 False
                     )
 
+        complexity =
+            List.head filtered |> Maybe.map .complexity |> Maybe.withDefault 0
+
         count =
             List.length filtered
     in
@@ -594,7 +640,7 @@ heuristic config context nonempty =
         0
 
     else
-        logBase 2 (toFloat count - toFloat testCount * 0.5) * toFloat minimumRange
+        logBase 2 (toFloat count - toFloat testCount * 0.5) * toFloat complexity |> round
 
 
 {-| Returns the number of elements in a list that satisfy a given predicate.
