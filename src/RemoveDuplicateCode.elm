@@ -596,7 +596,7 @@ finalEvaluation config projectContext =
                                     ++ allExamples
                             , details =
                                 [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too often and it would be better to have a single function for it."
-                                , "Debug info: This error has " ++ String.fromInt (heuristic config projectContext nonempty) ++ " complexity." |> Debug.log ""
+                                , "Debug info: This error has " ++ String.fromInt (heuristic config projectContext nonempty) ++ " complexity."
                                 ]
                             }
                             firstExample.range
