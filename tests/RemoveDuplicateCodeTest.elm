@@ -2,7 +2,7 @@ module RemoveDuplicateCodeTest exposing (all)
 
 import RemoveDuplicateCode
 import Review.Test
-import Test exposing (Test, describe, test)
+import Test exposing (Test, describe, only, test)
 
 
 all : Test
@@ -73,6 +73,45 @@ myType value =
             1
 """
                 ]
-                    |> Review.Test.runOnModules RemoveDuplicateCode.rule
+                    |> Review.Test.runOnModules (RemoveDuplicateCode.rule { ignore = [], threshold = 200 })
                     |> Review.Test.expectNoErrors
+        , only <|
+            test "distinguish local types 2" <|
+                \_ ->
+                    [ """module A exposing (..)
+
+errorMessage : Bool -> Result String b -> Element msg
+errorMessage submitAttempted result =
+    case ( submitAttempted, result ) of
+        ( True, Err error ) ->
+            DesignSystem.Input.errorMessage error
+
+        _ ->
+            Element.none
+
+        """
+                    , """module B exposing (..)
+
+errorMessage : Bool -> Result String b -> Element msg
+errorMessage submitAttempted result =
+    case ( submitAttempted, result ) of
+        ( True, Err error ) ->
+            DesignSystem.Input.errorMessage error
+
+        _ ->
+            Element.none
+
+        """
+                    ]
+                        |> Review.Test.runOnModules (RemoveDuplicateCode.rule { ignore = [], threshold = 200 })
+                        |> Review.Test.expectErrorsForModules
+                            [ ( "B"
+                              , [ Review.Test.error
+                                    { message = ""
+                                    , details = []
+                                    , under = ""
+                                    }
+                                ]
+                              )
+                            ]
         ]
