@@ -657,8 +657,19 @@ heuristic config context nonempty =
                     )
 
         complexity =
-            List.head filtered |> Maybe.map .complexity |> Maybe.withDefault 0
+            filtered
+                |> List.map
+                    (\{ range } ->
+                        if range.start.row == range.end.row then
+                            range.end.column - range.start.column
 
+                        else
+                            range.end.row - range.start.row
+                    )
+                |> List.minimum
+                |> Maybe.withDefault 0
+
+        --List.head filtered |> Maybe.map .complexity |> Maybe.withDefault 0
         count =
             List.length filtered
     in
