@@ -236,7 +236,16 @@ hashExpression context (Node range expression) hashDict =
 
         OperatorApplication string _ left right ->
             if string == "<|" then
-                hashHelper ("2" ++ delimiter ++ "|>") 1 [ right, left ]
+                hashHelper ("2" ++ delimiter ++ "|>") 2 [ right, left ]
+
+            else if string == "|>" then
+                hashHelper ("2" ++ delimiter ++ "|>") 2 [ left, right ]
+
+            else if string == "<<" then
+                hashHelper ("2" ++ delimiter ++ ">>") 2 [ right, left ]
+
+            else if string == ">>" then
+                hashHelper ("2" ++ delimiter ++ ">>") 2 [ left, right ]
 
             else
                 hashHelper ("2" ++ delimiter ++ string) 1 [ left, right ]
@@ -251,7 +260,7 @@ hashExpression context (Node range expression) hashDict =
             hashHelper ("4" ++ delimiter) 2 [ condition, ifTrue, ifFalse ]
 
         PrefixOperator string ->
-            { hash = "5" ++ delimiter ++ string, complexity = 1, hashDict = hashDict }
+            { hash = "5" ++ delimiter ++ string, complexity = 2, hashDict = hashDict }
 
         Operator string ->
             { hash = "6" ++ delimiter ++ string, complexity = 1, hashDict = hashDict }
@@ -278,7 +287,7 @@ hashExpression context (Node range expression) hashDict =
             hashHelper ("13" ++ delimiter) 1 nodes
 
         ParenthesizedExpression node ->
-            hashExpression context node hashDict
+            hashHelper ("13" ++ delimiter) 2 [ node ]
 
         LetExpression letBlock ->
             hashStuff
@@ -322,10 +331,10 @@ hashExpression context (Node range expression) hashDict =
                     List.map (Node.value >> Tuple.first >> Node.value) sorted |> String.join " "
             in
             List.map (Node.value >> Tuple.second) sorted
-                |> hashHelper ("17" ++ delimiter ++ fieldNames) 1
+                |> hashHelper ("17" ++ delimiter ++ fieldNames) 0
 
         ListExpr nodes ->
-            hashHelper ("18" ++ delimiter) 1 nodes
+            hashHelper ("18" ++ delimiter) 0 nodes
 
         RecordAccess value (Node _ accessor) ->
             hashHelper ("19" ++ delimiter ++ accessor) 0 [ value ]
@@ -610,8 +619,10 @@ finalEvaluation config projectContext =
                                     ++ " times) and can instead be combined into a single function.\n\nHere are all the places it's used:\n"
                                     ++ allExamples
                             , details =
-                                [ "It's okay to duplicate short snippets several times or duplicate larger chunks 2-3 times. But here it looks like this code is repeated too often and it would be better to have a single function for it."
-                                , "Debug info: This error has " ++ String.fromInt (heuristic config projectContext nonempty) ++ " complexity."
+                                [ "It's okay to duplicate short snippets several times or duplicate larger chunks a few times. But here it looks like this code is repeated too often and it would be better to have a single function for it."
+                                , "If you don't agree with this error, change the rule config to `RemoveDuplicateCode.rule { ... , threshold = "
+                                    ++ String.fromInt (heuristic config projectContext nonempty + 1)
+                                    ++ " }` to make the error go away."
                                 ]
                             }
                             firstExample.range
