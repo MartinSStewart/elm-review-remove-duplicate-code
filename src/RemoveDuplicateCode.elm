@@ -664,7 +664,7 @@ heuristic config context nonempty =
                             range.end.column - range.start.column
 
                         else
-                            range.end.row - range.start.row
+                            (range.end.row - range.start.row) * 100
                     )
                 |> List.minimum
                 |> Maybe.withDefault 0
