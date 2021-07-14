@@ -196,13 +196,10 @@ hashExpression context (Node range expression) hashDict =
                         )
                         { hash = delimiter ++ hash, complexity = addedComplexity, hashDict = hashDict_ }
                         nodes
-
-                complexity =
-                    finalResult.complexity + List.length nodes
             in
             { hash = finalResult.hash
-            , complexity = complexity
-            , hashDict = insert finalResult.hash { range = range, complexity = complexity } finalResult.hashDict
+            , complexity = finalResult.complexity
+            , hashDict = insert finalResult.hash { range = range, complexity = finalResult.complexity } finalResult.hashDict
             }
 
         hashHelper hash addedComplexity nodes =
