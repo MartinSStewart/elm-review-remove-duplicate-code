@@ -328,7 +328,7 @@ hashExpression context (Node range expression) hashDict =
             hashHelper ("18" ++ delimiter) 1 nodes
 
         RecordAccess value (Node _ accessor) ->
-            hashHelper ("19" ++ delimiter ++ accessor) 1 [ value ]
+            hashHelper ("19" ++ delimiter ++ accessor) 0 [ value ]
 
         RecordAccessFunction string ->
             { hash = "20" ++ delimiter ++ string, complexity = 1, hashDict = hashDict }
