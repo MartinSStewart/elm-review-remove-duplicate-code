@@ -30,5 +30,5 @@ To help with determining a good threshold, each error which will tell you how mu
 You can try the example configuration above out by running the following command:
 
 ```bash
-elm-review --template MartinSStewart/elm-review-remove-duplicate-code/example
+elm-review --template MartinSStewart/elm-review-remove-duplicate-code/preview
 ```
